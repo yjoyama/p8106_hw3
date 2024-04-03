@@ -12,6 +12,8 @@ library(tidyverse)
 library(ggplot2)
 library(rsample)
 library(caret)
+library(vip)
+library(pROC)
 
 # setup plot theme
 theme_set(
@@ -54,7 +56,7 @@ ctrl <- trainControl(
 ```
 
 # (a) 
-In this section, I will fit an elastic net model using the training data.
+In this section, I will fit an elastic net model as a penalized logistic regression.
 
 ```{r enet}
 set.seed(1995)
@@ -94,11 +96,93 @@ coef(enet.fit$finalModel, s = enet.fit$bestTune$lambda)
 The model includes five predictors. `acceleratio` and `origin` were found to be redundant in this model.
 
 # (b)
+Setting a probability threshold to 0.5 and determine the class labels. If $Pr(Y = \text{low}|X)<0.5$, we will classify this as `low`, otherwise `high`.
 ```{r}
-
+test.pred.prob <- predict(enet.fit, newdata = df_test, type = "prob")
+test.pred <- rep("high", nrow(df_test))
+test.pred[test.pred.prob[1] < 0.5] <- "low"
 ```
 
+The confusion matrix using the test data is as follows.
+```{r}
+confusionMatrix(
+  data = as.factor(test.pred),
+  reference = df_test$mpg_cat
+)
+```
+
+Given the confusion matrix with `high` being the `Positive Class`, we can see that:  
+True Positive (TP) = 49  
+True Negative (TN) = 57  
+False Positive (FP) = 9  
+False Negative (FN) = 3  
+
+The metric Accuracy ($\frac{TP+TN}{TP+FP+TN+FN}$) signifies that 89.83% of the samples were correctly classified out of all the samples. Sensitivity ($\frac{TP}{TP+FN}$) indicates that out of all actual Positive Class instances, 94.23% were correctly predicted as `high`. On the other hand, Specificity ($\frac{TN}{FP+TN}$), which is 86.36%, represents the proportion of actual Negative Class instances correctly predicted as `low`.
+
 # (c)
+Here, I will train a MARS model using the training data.
+```{r mars}
+set.seed(1995)
+
+# fit mars model
+mars.fit <- train(
+  x = df_train[1:7],
+  y = df_train$mpg_cat,
+  method = "earth",
+  tuneGrid = expand.grid(degree = 1:5, nprune = 2:20),
+  metric = "ROC",
+  trControl = ctrl
+)
+
+summary(mars.fit$finalModel)
+
+# best tuning parameters
+mars.fit$bestTune
+
+# plot
+plot(mars.fit)
+
+# pdp
+pdp::partial(mars.fit, pred.var = "displacement", grid.resolution = 200) |> autoplot()
+
+# relative variable importance
+vip(mars.fit$finalModel, type = "nsubsets")
+```
+
+The best tuning parameters selected from the cross validation is nprune (the upper bound of the number of terms) = `r mars.fit$bestTune[1]` and degree = `r mars.fit$bestTune[2]`.  
+
+The final model can be expressed as the following:  
+$\hat{y}$ = `r round(coef(mars.fit$finalModel)[1], 3)` - `r -round(coef(mars.fit$finalModel)[2], 3)` $\times$ h(displacement-232) - `r -round(coef(mars.fit$finalModel)[3], 3)` $\times$ h(year-78) + `r round(coef(mars.fit$finalModel)[4], 3)` $\times$ h(78-year) - `r -round(coef(mars.fit$finalModel)[5], 3)` $\times$ h(3459-weight) + `r round(coef(mars.fit$finalModel)[6], 3)` $\times$ h(displacement-151) + `r round(coef(mars.fit$finalModel)[7], 3)` $\times$ h(horsepower-75) + `r round(coef(mars.fit$finalModel)[8], 3)` $\times$ h(horsepower-133) + `r round(coef(mars.fit$finalModel)[9], 3)` $\times$ h(displacement-262) - `r -round(coef(mars.fit$finalModel)[10], 3)` $\times$ h(horsepower-72) + `r round(coef(mars.fit$finalModel)[11], 3)` $\times$ h(4-cylinders)   
+where $h(.)$ is hinge function.  
+
+Now, let's compare the two models.
+```{r}
+res <- resamples(
+  list(
+    elastic_net = enet.fit,
+    mars = mars.fit
+  )
+)
+
+summary(res)
+bwplot(res, metric = "ROC")
+
+# test data performance
+enet.pred <- predict(enet.fit, newdata = df_test, type = "prob")[,2]
+mars.pred <- predict(mars.fit, newdata = df_test, type = "prob")[,2]
+
+roc.enet <- roc(df_test$mpg_cat, enet.pred)
+roc.mars <- roc(df_test$mpg_cat, mars.pred)
+
+auc <- c(roc.enet$auc[1], roc.mars$auc[1])
+
+modelNames <- c("elastic_net", "mars")
+
+ggroc(list(roc.enet, roc.mars), legacy.axes = TRUE) +
+  scale_color_discrete(labels = paste0(modelNames, "(", round(auc, 3), ")"), name = "Models (AUC)")
+```
+
+Based on the results, the MARS model exhibits a larger Area Under the Curve (AUC) of `r round(roc.mars$auc[1], 3)`, suggesting enhanced prediction performance compared to logistic regression.
 
 # (d)
 
