@@ -1,7 +1,7 @@
 ---
 title: "Homework 3"
 author: "Yuki Joyama"
-date: "2024-04-01"
+date: "2024-04-03"
 output: github_document
 ---
 
@@ -10,6 +10,8 @@ knitr::opts_chunk$set(echo = T, message = F, warning = F)
 
 library(tidyverse)
 library(ggplot2)
+library(rsample)
+library(caret)
 
 # setup plot theme
 theme_set(
@@ -20,5 +22,91 @@ theme_set(
 
 ```{r data}
 # data prep
-df = read_csv("auto.csv")
+df = read_csv("auto.csv") |> 
+  mutate(
+    origin = as.factor(case_when(
+      origin == 1 ~ "American",
+      origin == 2 ~ "European",
+      origin == 3 ~ "Japanese"
+    )),
+    mpg_cat = as.factor(mpg_cat)
+  )
 ```
+
+First, I will split the dataset into two parts: training data (70%) and test data (30%)
+```{r datasplit}
+set.seed(1995)
+data_split = initial_split(df, prop = .70)
+
+# training data
+df_train = training(data_split) 
+
+# test data
+df_test = testing(data_split)
+
+# set up 10-fold CV
+ctrl <- trainControl(
+  method = "cv",
+  number = 10,
+  summaryFunction = twoClassSummary,
+  classProbs = TRUE
+)
+```
+
+# (a) 
+In this section, I will fit an elastic net model using the training data.
+
+```{r enet}
+set.seed(1995)
+
+# find tuning parameter by CV
+enet.fit <- 
+  train(
+    x = df_train[1:7],
+    y = df_train$mpg_cat,
+    data = df_train,
+    method = "glmnet",
+    metric = "ROC",
+    tuneGrid = expand.grid(
+      alpha = seq(0, 1, length = 20),
+      lambda = exp(seq(-3, 10, length = 100))
+    ),
+    trControl = ctrl
+  )
+
+# check the best tuning parameter
+enet.fit$bestTune
+
+# plot RMSE, lambda and alpha
+myCol <- rainbow(25)
+myPar <- list(
+  superpose.symbol = list(col = myCol),
+  superpose.line = list(col = myCol)
+)
+
+plot(enet.fit, par.settings = myPar, xTrans = log)
+
+# coefficients in the final model
+coef(enet.fit$finalModel, s = enet.fit$bestTune$lambda)
+```
+
+10-fold cross validation is implemented to select the optimal tuning parameters ($\alpha =$ `r round(enet.fit$bestTune[1], 2)`, $\lambda =$ `r round(enet.fit$bestTune[2], 2)`).  
+The model includes five predictors. `acceleratio` and `origin` were found to be redundant in this model.
+
+# (b)
+```{r}
+
+```
+
+# (c)
+
+# (d)
+
+# (e)
+
+
+
+
+
+
+
