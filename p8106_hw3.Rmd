@@ -2,7 +2,7 @@
 title: "Homework 3"
 author: "Yuki Joyama"
 date: "2024-04-03"
-output: github_document
+output: pdf_document
 ---
 
 ```{r setup, include=FALSE}
@@ -14,6 +14,7 @@ library(rsample)
 library(caret)
 library(vip)
 library(pROC)
+library(MASS)
 
 # setup plot theme
 theme_set(
@@ -24,15 +25,7 @@ theme_set(
 
 ```{r data}
 # data prep
-df = read_csv("auto.csv") |> 
-  mutate(
-    origin = as.factor(case_when(
-      origin == 1 ~ "American",
-      origin == 2 ~ "European",
-      origin == 3 ~ "Japanese"
-    )),
-    mpg_cat = as.factor(mpg_cat)
-  )
+df = read_csv("auto.csv") 
 ```
 
 First, I will split the dataset into two parts: training data (70%) and test data (30%)
@@ -93,7 +86,7 @@ coef(enet.fit$finalModel, s = enet.fit$bestTune$lambda)
 ```
 
 10-fold cross validation is implemented to select the optimal tuning parameters ($\alpha =$ `r round(enet.fit$bestTune[1], 2)`, $\lambda =$ `r round(enet.fit$bestTune[2], 2)`).  
-The model includes five predictors. `acceleratio` and `origin` were found to be redundant in this model.
+The model includes five predictors. `acceleration` was found to be redundant in this model.
 
 # (b)
 Setting a probability threshold to 0.5 and determine the class labels. If $Pr(Y = \text{low}|X)<0.5$, we will classify this as `low`, otherwise `high`.
@@ -107,17 +100,17 @@ The confusion matrix using the test data is as follows.
 ```{r}
 confusionMatrix(
   data = as.factor(test.pred),
-  reference = df_test$mpg_cat
+  reference = as.factor(df_test$mpg_cat)
 )
 ```
 
 Given the confusion matrix with `high` being the `Positive Class`, we can see that:  
-True Positive (TP) = 49  
+True Positive (TP) = 50  
 True Negative (TN) = 57  
 False Positive (FP) = 9  
-False Negative (FN) = 3  
+False Negative (FN) = 2  
 
-The metric Accuracy ($\frac{TP+TN}{TP+FP+TN+FN}$) signifies that 89.83% of the samples were correctly classified out of all the samples. Sensitivity ($\frac{TP}{TP+FN}$) indicates that out of all actual Positive Class instances, 94.23% were correctly predicted as `high`. On the other hand, Specificity ($\frac{TN}{FP+TN}$), which is 86.36%, represents the proportion of actual Negative Class instances correctly predicted as `low`.
+The metric Accuracy ($\frac{TP+TN}{TP+FP+TN+FN}$) signifies that 90.68% of the samples were correctly classified out of all the samples. Sensitivity ($\frac{TP}{TP+FN}$) indicates that out of all actual Positive Class instances, 96.15% were correctly predicted as `high`. On the other hand, Specificity ($\frac{TN}{FP+TN}$), which is 86.36%, represents the proportion of actual Negative Class instances correctly predicted as `low`.
 
 # (c)
 Here, I will train a MARS model using the training data.
@@ -166,29 +159,79 @@ res <- resamples(
 
 summary(res)
 bwplot(res, metric = "ROC")
+```
+
+Based on the results, the MARS model exhibits a larger median ROC, suggesting improved prediction performance compared to logistic regression.
+
+# (d)
+In this section, I will perform linear discriminant analysis using the training data. 
+```{r}
+lda.fit1 <- lda(mpg_cat ~., data = df_train)
+lda.fit1
+```
+
+The group means represent the average values of each predictor within each `mpg_cat` group. For example, we can see that in `high` group, the mean number of cylinders is 4.17 whereas in `low` group, it's 6.70. 
+The linear discriminant variables are plotted below:  
+```{r}
+plot(lda.fit1, col = as.numeric(df_train$mpg_cat))
+```
+
+
+# (e)  
+```{r}
+set.seed(1995)
+
+lda.fit <- train(
+  x = df_train[1:7],
+  y = df_train$mpg_cat,
+  method = "lda",
+  metric = "ROC",
+  trControl = ctrl
+)
+
+res <- resamples(
+  list(
+    elastic_net = enet.fit,
+    mars = mars.fit,
+    lda = lda.fit
+  )
+)
+
+summary(res)
+bwplot(res, metric = "ROC")
 
 # test data performance
 enet.pred <- predict(enet.fit, newdata = df_test, type = "prob")[,2]
 mars.pred <- predict(mars.fit, newdata = df_test, type = "prob")[,2]
+lda.pred <- predict(lda.fit, newdata = df_test, type = "prob")[,2]
 
 roc.enet <- roc(df_test$mpg_cat, enet.pred)
 roc.mars <- roc(df_test$mpg_cat, mars.pred)
+roc.lda <- roc(df_test$mpg_cat, lda.pred)
 
-auc <- c(roc.enet$auc[1], roc.mars$auc[1])
+auc <- c(roc.enet$auc[1], roc.mars$auc[1], roc.lda$auc[1])
 
-modelNames <- c("elastic_net", "mars")
+modelNames <- c("elastic_net", "mars", "lda")
 
-ggroc(list(roc.enet, roc.mars), legacy.axes = TRUE) +
+ggroc(list(roc.enet, roc.mars, roc.lda), legacy.axes = TRUE) +
   scale_color_discrete(labels = paste0(modelNames, "(", round(auc, 3), ")"), name = "Models (AUC)")
 ```
 
-Based on the results, the MARS model exhibits a larger Area Under the Curve (AUC) of `r round(roc.mars$auc[1], 3)`, suggesting enhanced prediction performance compared to logistic regression.
+The resampling results shows that the MARS model has the largest median ROC among the three models.  
+Thus, I would prefer to utilize the MARS model for predicting the response variable. Next, I will generate ROC curves for all three models using the test data.  
+We can see that the MARS model has the largest AUC of `r round(roc.mars$auc[1], 3)`. 
 
-# (d)
+```{r}
+test.pred.prob <- predict(mars.fit, newdata = df_test, type = "raw")
 
-# (e)
+confusionMatrix(
+  data = test.pred.prob,
+  reference = as.factor(df_test$mpg_cat)
+)
+```
 
-
+The misclassification error rate can be obtained by  
+1 - accuracy = 1 - 0.9068 = **`r 1 - 0.9068`**
 
 
 
